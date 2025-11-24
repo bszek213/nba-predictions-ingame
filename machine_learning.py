@@ -283,7 +283,7 @@ def predict_win_probability(model):
     perc = 10
     # df = _build_game_meta_this_season()
     mu_sigma = pd.read_json("mu_sigma.json").to_dict()
-    cm_dist_arr = pd.read_csv("cm_dist.csv").values.ravel()  # 1D array
+    cm_dist_arr = pd.read_csv("betting_data/cm_dist.csv").values.ravel()  # 1D array
     with open('models/winprob_columns.json', 'r') as file:
             X_cols = json.load(file)
     cm_cut = np.percentile(cm_dist_arr, perc)

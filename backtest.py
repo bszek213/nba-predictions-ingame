@@ -308,7 +308,7 @@ def backtest_games(model):
     cm_dist = build_cm_distribution(combine_df,model,X_cols,mu_sigma)
 
     pd.Series(mu_sigma).to_json("mu_sigma.json")
-    pd.Series(cm_dist).to_csv('cm_dist.csv',index=False)
+    pd.Series(cm_dist).to_csv('betting_data/cm_dist.csv',index=False)
     best = None
     for perc in tqdm([10,20,30,40,50],desc='Percentile'):
         cm_cut = np.percentile(cm_dist, perc)
