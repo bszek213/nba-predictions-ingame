@@ -12,6 +12,8 @@ from pbp_collect import _build_game_meta_this_season, _expand_pbp_for_game, buil
 from nba_api.stats.endpoints import LeagueGameFinder, PlayByPlayV3
 from nba_api.live.nba.endpoints import playbyplay as live_pbp
 import json, re
+from backtest import cm_game
+from time import sleep
 def ml_to_prob(series: pd.Series):
     s = series.values
     # raw implied probability from American moneyline
@@ -268,15 +270,24 @@ def predict_win_probability(model):
     Val AUC: 0.8532404389391786
     Accuracy: 0.6707194267285584
     Best threshold: 0.4897959183673469
-    """
-    # df = _build_game_meta_this_season()
-    df = build_today_live_meta()
 
-    #get games today
-    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'], utc=True).dt.tz_convert('US/Eastern').dt.tz_localize(None)
-    # today = pd.Timestamp.now().normalize()
-    # print(df)
-    df = df[df['STATUS'] >= 2]  # games that have started
+    {'perc': 10, 'p_thresh': 0.85, 'K': 7, 'n_games': 7053, 'n_bets': 2161, 
+    'bet_rate': 0.30639444208138383, 'hit_rate': 0.974548819990745,
+    'avg_profit': 0.9490976399814901, 'roi_per_bet': 0.9490976399814901}
+    """
+    # ---- hyperparameters (from backtest) ----
+    perc = 16#10 one std...
+    p_thresh = 0.85
+    K = 7
+    min_points = 10
+    perc = 10
+    # df = _build_game_meta_this_season()
+    mu_sigma = pd.read_json("mu_sigma.json").to_dict()
+    cm_dist_arr = pd.read_csv("cm_dist.csv").values.ravel()  # 1D array
+    with open('models/winprob_columns.json', 'r') as file:
+            X_cols = json.load(file)
+    cm_cut = np.percentile(cm_dist_arr, perc)
+    game_state = {}
 
     NUM_COLS = [
         "SECONDS_FROM_START", "SECONDS_REMAINING_REG",
@@ -292,41 +303,92 @@ def predict_win_probability(model):
     ]
 
     TEXT_COLS = ["description"]  #  current event text (post-play is OK)
-
-    with open('models/winprob_columns.json', 'r') as file:
-        X_cols = json.load(file)
     
-    GREEN = "\033[92m"   # bright green
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
     RESET = "\033[0m"
 
-    cat_idx  = [X_cols.index(c) for c in CAT_COLS if c in X_cols]
-    text_idx = [X_cols.index(c) for c in TEXT_COLS if c in X_cols]
-    df = convert_date_to_cycle(df)
-    for i, row in df.iterrows():
-        game_id = str(row["GAME_ID"])
-        latest_play = get_latest_action_row(game_id)
-        # with open("live_pbp.json", "w") as f:
-        #     json.dump(live, f, indent=2, ensure_ascii=False)
-        iss, s_rem = iso_clock_to_secs(latest_play["clock"], latest_play["period"])
-        latest_play["SECONDS_FROM_START"] = iss
-        latest_play["SECONDS_REMAINING_REG" ] = s_rem
-        latest_play["pregame_p_team"], latest_play["pregame_p_opp"] = input_pregame_probabilities(row['HOME_TEAM_ABBREV'], 
-                                                                                                  row['AWAY_TEAM_ABBREV'])
-        seconds_remaining = max(latest_play["SECONDS_REMAINING_REG"], 0)  # clip at 0
-        latest_play["t_frac"] = float(seconds_remaining) / (48 * 60)
-        latest_play["lead_x_time"]  = float(latest_play["LEAD_HOME"] * latest_play["t_frac"])
-        latest_play["prior_x_time"] = float(latest_play["pregame_p_team"] * latest_play["t_frac"])  # or pregame_p_home
-        
-        latest_df = pd.DataFrame([latest_play])
-        row_df = row.to_frame().T.reset_index(drop=True)
-        combine_df = pd.concat([row_df, latest_df], axis=1)
-        combine_df = combine_df.loc[:, ~combine_df.columns.duplicated()].copy() #check this in the future if you change anything
+    while True:
+        df = build_today_live_meta()
 
-        pool = Pool(combine_df[X_cols], cat_features=cat_idx, text_features=text_idx)
-        p = model.predict_proba(pool)[:, 1]
-        home_proba = p[0]
-        away_proba = 1.0 - home_proba
-        print(f"{GREEN}{combine_df['HOME_TEAM_ABBREV'].iloc[0]} {home_proba:.2g} proba vs. {combine_df['AWAY_TEAM_ABBREV'].iloc[0]} {away_proba:.2g} proba{RESET}")
-        print(80 * '-')
-        if p[0] >= 0.4897959183673469:
-            print(f"{GREEN} --> {combine_df['HOME_TEAM_ABBREV'].iloc[0]} is favored to win!{RESET}")
+        #get games today
+        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'], utc=True).dt.tz_convert('US/Eastern').dt.tz_localize(None)
+        df = df[df['STATUS'] >= 2]  # games that have started
+        df = df[~df['STATUS_TEXT'].str.contains('Final', na=False)]  # exclude final games
+
+        mu_sigma = pd.read_json("mu_sigma.json").to_dict()
+        cm_dist = pd.read_csv("cm_dist.csv")
+
+        cat_idx  = [X_cols.index(c) for c in CAT_COLS if c in X_cols]
+        text_idx = [X_cols.index(c) for c in TEXT_COLS if c in X_cols]
+        df = convert_date_to_cycle(df)
+        live_ids = set(df["GAME_ID"].astype(str).unique())
+        for i, row in df.iterrows():
+            game_id = str(row["GAME_ID"])
+            latest_play = get_latest_action_row(game_id)
+            # with open("live_pbp.json", "w") as f:
+            #     json.dump(live, f, indent=2, ensure_ascii=False)
+            iss, s_rem = iso_clock_to_secs(latest_play["clock"], latest_play["period"])
+            latest_play["SECONDS_FROM_START"] = iss
+            latest_play["SECONDS_REMAINING_REG" ] = s_rem
+            latest_play["pregame_p_team"], latest_play["pregame_p_opp"] = input_pregame_probabilities(row['HOME_TEAM_ABBREV'], 
+                                                                                                    row['AWAY_TEAM_ABBREV'])
+            seconds_remaining = max(latest_play["SECONDS_REMAINING_REG"], 0)  #clip at 0
+            latest_play["t_frac"] = float(seconds_remaining) / (48 * 60)
+            latest_play["lead_x_time"]  = float(latest_play["LEAD_HOME"] * latest_play["t_frac"])
+            latest_play["prior_x_time"] = float(latest_play["pregame_p_team"] * latest_play["t_frac"])  # or pregame_p_home
+            
+            latest_df = pd.DataFrame([latest_play])
+            row_df = row.to_frame().T.reset_index(drop=True)
+            combine_df = pd.concat([row_df, latest_df], axis=1)
+            combine_df = combine_df.loc[:, ~combine_df.columns.duplicated()].copy() #check this in the future if you change anything
+
+            pool = Pool(combine_df[X_cols], cat_features=cat_idx, text_features=text_idx)
+            p = model.predict_proba(pool)[:, 1]
+            home_proba = p[0]
+            away_proba = 1.0 - home_proba
+            
+            #UPDATE BASED ON ACTION
+            st = game_state.setdefault(game_id, {
+                "preds": [],
+                "below_run": 0,
+                "bet_made": False,
+                "last_action": None
+            })
+            action_num = latest_play.get("actionNumber", None)
+            if action_num is not None and st["last_action"] == action_num:
+                # no new play dont append
+                continue
+            st["last_action"] = action_num
+
+            st["preds"].append(home_proba)
+            print(f"{GREEN}{combine_df['HOME_TEAM_ABBREV'].iloc[0]} {home_proba:.2g} proba vs. {combine_df['AWAY_TEAM_ABBREV'].iloc[0]} {away_proba:.2g} proba{RESET}")
+
+            #betting rule
+            if (not st["bet_made"]) and (len(st["preds"]) >= min_points):
+                cm_t = cm_game(st["preds"], mu_sigma, window=10)
+                cm_now = cm_t[-1]
+                # stability run
+                if cm_now <= cm_cut:
+                    st["below_run"] += 1
+                else:
+                    st["below_run"] = 0
+
+                print(f"chaos metric now: {cm_now:.2g} || num times below percentile (<{cm_cut:.2g}): {st['below_run']}")
+                print(40 * '-')
+
+                p_lead_now = max(home_proba, away_proba)
+                leader_is_home = home_proba >= away_proba
+
+                if st["below_run"] >= K: #and p_lead_now >= p_thresh
+                    st["bet_made"] = True
+                    bet_team = (combine_df['HOME_TEAM_ABBREV'].iloc[0]
+                                if leader_is_home else combine_df['AWAY_TEAM_ABBREV'].iloc[0])
+
+                    print(f"{YELLOW} BET TRIGGERED on {bet_team} "
+                          f"(p_lead={p_lead_now:.2g}, cm={cm_now:.2f}, run={st['below_run']}){RESET}")
+        for gid in list(game_state.keys()):
+            if gid not in live_ids:
+                del game_state[gid]
+        print(f"{YELLOW}----------------------------{RESET}")
+        sleep(10)

@@ -2,9 +2,9 @@
 
 Estimate **in-game home win probability** for NBA games.  
 Start from **pregame moneyline odds**, then update after each play using live play-by-play.
-CatBoost model was trained on 2.5 million samples that were a mix of numerical, categorical, and text data
-
-Currently working on scaling this and tuning.
+CatBoost model was trained on **2.5 million samples** that were a mix of numerical, categorical, and text data
+odds data are from: https://www.oddsportal.com/basketball/usa/nba/
+**Currently working on scaling this and tuning.**
 ## Quickstart
 
 ```bash
